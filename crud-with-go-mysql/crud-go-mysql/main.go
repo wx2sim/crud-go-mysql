@@ -2,19 +2,22 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"text/template"
+
+	"github.com/gorilla/mux"
 
 	jwt "github.com/dgrijalva/jwt-go"
 	_ "github.com/go-sql-driver/mysql"
 )
 
 type Employee struct {
-	Id   int
-	Name string
-	City string
+	Id   int    `json:"id"`
+	Name string `json:"name"`
+	City string `json:"city"`
 }
 
 var mySigningKey = []byte("benchmatrix")
@@ -59,11 +62,18 @@ func dbConn() (db *sql.DB) {
 
 var tmpl = template.Must(template.ParseGlob("form/*"))
 
+func respondWithJson(w http.ResponseWriter, code int, payload interface{}) {
+	response, _ := json.Marshal(payload)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	w.Write(response)
+}
+
 func Index(w http.ResponseWriter, r *http.Request) {
 	db := dbConn()
 	selDB, err := db.Query("SELECT * FROM Employee ORDER BY id DESC")
 	if err != nil {
-		panic(err.Error())
+		respondWithJson(w, http.StatusBadRequest, map[string]string{"message": "Bad request"})
 	}
 	emp := Employee{}
 	res := []Employee{}
@@ -72,98 +82,63 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		var name, city string
 		err = selDB.Scan(&id, &name, &city)
 		if err != nil {
-			panic(err.Error())
+			respondWithJson(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
 		}
 		emp.Id = id
 		emp.Name = name
 		emp.City = city
 		res = append(res, emp)
 	}
-	tmpl.ExecuteTemplate(w, "Index", res)
-	defer db.Close()
-}
-
-func Show(w http.ResponseWriter, r *http.Request) {
-	db := dbConn()
-	nId := r.URL.Query().Get("id")
-	selDB, err := db.Query("SELECT * FROM Employee WHERE id=?", nId)
-	if err != nil {
-		panic(err.Error())
-	}
-	emp := Employee{}
-	for selDB.Next() {
-		var id int
-		var name, city string
-		err = selDB.Scan(&id, &name, &city)
-		if err != nil {
-			panic(err.Error())
-		}
-		emp.Id = id
-		emp.Name = name
-		emp.City = city
-	}
-	tmpl.ExecuteTemplate(w, "Show", emp)
+	respondWithJson(w, http.StatusOK, res)
 	defer db.Close()
 }
 
 func New(w http.ResponseWriter, r *http.Request) {
-	tmpl.ExecuteTemplate(w, "New", nil)
-}
-
-func Edit(w http.ResponseWriter, r *http.Request) {
+	employee := Employee{}
+	err := json.NewDecoder(r.Body).Decode(&employee)
+	if err != nil {
+		if err != nil {
+			respondWithJson(w, http.StatusInternalServerError, map[string]string{"message": "Internal Server Error"})
+		}
+	}
 	db := dbConn()
-	nId := r.URL.Query().Get("id")
-	selDB, err := db.Query("SELECT * FROM Employee WHERE id=?", nId)
+	name := employee.Name
+	city := employee.City
+	insForm, err := db.Prepare("INSERT INTO Employee(name, city) VALUES(?,?)")
 	if err != nil {
 		panic(err.Error())
 	}
-	emp := Employee{}
-	for selDB.Next() {
-		var id int
-		var name, city string
-		err = selDB.Scan(&id, &name, &city)
-		if err != nil {
-			panic(err.Error())
-		}
-		emp.Id = id
-		emp.Name = name
-		emp.City = city
+	res, err := insForm.Exec(name, city)
+	if err != nil {
+		respondWithJson(w, http.StatusForbidden, map[string]string{"message": "Forbiden"})
 	}
-	tmpl.ExecuteTemplate(w, "Edit", emp)
-	defer db.Close()
-}
+	log.Println("INSERT: Name: " + name + " | City: " + city)
 
-func Insert(w http.ResponseWriter, r *http.Request) {
-	db := dbConn()
-	if r.Method == "POST" {
-		name := r.FormValue("name")
-		city := r.FormValue("city")
-		insForm, err := db.Prepare("INSERT INTO Employee(name, city) VALUES(?,?)")
-		if err != nil {
-			panic(err.Error())
-		}
-		insForm.Exec(name, city)
-		log.Println("INSERT: Name: " + name + " | City: " + city)
-	}
 	defer db.Close()
-	http.Redirect(w, r, "/", 301)
+	finalRes, err := res.RowsAffected()
+	respondWithJson(w, http.StatusOK, finalRes)
 }
 
 func Update(w http.ResponseWriter, r *http.Request) {
 	db := dbConn()
-	if r.Method == "POST" {
-		name := r.FormValue("name")
-		city := r.FormValue("city")
-		id := r.FormValue("uid")
-		insForm, err := db.Prepare("UPDATE Employee SET name=?, city=? WHERE id=?")
-		if err != nil {
-			panic(err.Error())
-		}
-		insForm.Exec(name, city, id)
-		log.Println("UPDATE: Name: " + name + " | City: " + city)
+	employee := Employee{}
+	err := json.NewDecoder(r.Body).Decode(&employee)
+	name := employee.Name
+	city := employee.City
+	id := employee.Id
+	insForm, err := db.Prepare("UPDATE Employee SET name=?, city=? WHERE id=?")
+	if err != nil {
+		respondWithJson(w, http.StatusBadRequest, map[string]string{"message": "Bad request"})
 	}
+	res, err := insForm.Exec(name, city, id)
+	if err != nil {
+		respondWithJson(w, http.StatusForbidden, map[string]string{"message": "Forbiden"})
+	}
+	log.Println("UPDATE: Name: " + name + " | City: " + city)
 	defer db.Close()
-	http.Redirect(w, r, "/", 301)
+	finalRes, err := res.RowsAffected()
+	respondWithJson(w, http.StatusOK, finalRes)
+
 }
 
 func Delete(w http.ResponseWriter, r *http.Request) {
@@ -171,24 +146,27 @@ func Delete(w http.ResponseWriter, r *http.Request) {
 	emp := r.URL.Query().Get("id")
 	delForm, err := db.Prepare("DELETE FROM Employee WHERE id=?")
 	if err != nil {
-		panic(err.Error())
+		respondWithJson(w, http.StatusBadRequest, map[string]string{"message": "Bad request"})
 	}
-	delForm.Exec(emp)
-	log.Println("DELETE")
+	res, err := delForm.Exec(emp)
+	if err != nil {
+		respondWithJson(w, http.StatusForbidden, map[string]string{"message": "Forbiden"})
+	}
 	defer db.Close()
-	http.Redirect(w, r, "/", 301)
+	finalRes, err := res.RowsAffected()
+	respondWithJson(w, http.StatusOK, finalRes)
+
 }
 
 func HandelRequest() {
 	log.Println("Server started on: http://localhost:8080")
-	http.Handle("/", isAuthorized(Index))
-	http.Handle("/show", isAuthorized(Show))
-	http.Handle("/new", isAuthorized(New))
-	http.Handle("/edit", isAuthorized(Edit))
-	http.Handle("/insert", isAuthorized(Insert))
-	http.Handle("/update", isAuthorized(Update))
-	http.Handle("/delete", isAuthorized(Delete))
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	router := mux.NewRouter()
+	router.HandleFunc("/", Index).Methods(http.MethodGet)
+	router.HandleFunc("/insert", New).Methods(http.MethodPost)
+	router.HandleFunc("/update/{Id}", Update).Methods(http.MethodPut)
+	router.HandleFunc("/delete", Delete).Methods(http.MethodDelete)
+	log.Fatal(http.ListenAndServe(":8080", router))
+
 }
 
 func main() {
