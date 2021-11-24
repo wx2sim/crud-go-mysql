@@ -163,7 +163,7 @@ func HandelRequest() {
 	router := mux.NewRouter()
 	router.HandleFunc("/", Index).Methods(http.MethodGet)
 	router.HandleFunc("/insert", New).Methods(http.MethodPost)
-	router.HandleFunc("/update/{Id}", Update).Methods(http.MethodPut)
+	router.HandleFunc("/update", Update).Methods(http.MethodPut)
 	router.HandleFunc("/delete", Delete).Methods(http.MethodDelete)
 	log.Fatal(http.ListenAndServe(":8080", router))
 
